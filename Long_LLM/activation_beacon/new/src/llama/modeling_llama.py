@@ -1087,7 +1087,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     # NOTE: add reference attention_mask so that padding tokens are considered
                     ordinal_attention_mask = ordinal_attention_mask[None, None, ...] + reference_attention_mask.unsqueeze(-2)
 
-                    if self.config.beacon_attend_prev:
+                    if self.config.beacon_attend_prev:#这里的变动即memory token能看到前面的memory token了，position也要相应变化
                         beacon_attention_mask = attention_mask.new_full((beacon_size, beacon_size), min_value).triu(1)
                         # the beacon token is next to the last oridinal token it attends to
                         beacon_position_ids = torch.arange(token_per_beacon, token_per_beacon * beacon_size + 1, token_per_beacon) + memory_size
