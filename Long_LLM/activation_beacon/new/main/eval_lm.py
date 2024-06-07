@@ -38,12 +38,20 @@ class Args(ModelArgs):
     )
 
     max_sample_num: int = field(
-        default=100,
+        default=1000000,
         metadata={'help': 'How many samples to evaluate in eval_data?'}
     )
     min_length: Optional[int] = field(
         default=None,
         metadata={'help': 'Minimum length for input_ids.'}
+    )
+    num_eval_tokens: int = field(
+        default=256,
+        metadata={'help': ''}
+    )
+    num_eval_length: int = field(
+        default=8192,
+        metadata={'help': ''}
     )
 
 
@@ -59,7 +67,7 @@ def process_lm_pre(tokenizer, tokenize_max_char=None):
     return _process
 
 
-def process_lm(tokenizer, max_length=4096, stride=1024, min_length=None):
+def process_lm(tokenizer, max_length=4096, stride=1024, min_length=None, num_eval_tokens=256, num_eval_length=8192):
     # stride=0 indicates we just use one forward pass with max_length for each text
     if stride == 0:
         stride = max_length
@@ -78,18 +86,13 @@ def process_lm(tokenizer, max_length=4096, stride=1024, min_length=None):
         outputs = defaultdict(list)
 
         for text, index in zip(data["text"], indices):
-            input_ids = tokenizer.encode(text, add_special_tokens=False)
+            input_ids = tokenizer.encode(text, add_special_tokens=False, truncation=True, padding=False, max_length=max_length)
 
             seq_len = len(input_ids)
-            prev_end_loc = 0
-
-            if min_length is not None and seq_len < min_length:
-                continue
 
             for start_loc in range(0, seq_len, stride):
                 end_loc = min(start_loc + max_length, seq_len)
                 sub_seq_len = end_loc - start_loc
-                sub_trg_len = end_loc - prev_end_loc  # may be different from stride on last loop
 
                 sub_input_ids = input_ids[start_loc: end_loc]
                 sub_attention_mask = [1 for _ in range(sub_seq_len)]
@@ -99,19 +102,18 @@ def process_lm(tokenizer, max_length=4096, stride=1024, min_length=None):
                     sub_seq_len += 1
 
                 sub_labels = sub_input_ids.copy()
-                sub_labels[:-sub_trg_len] = [-100 for _ in range(sub_seq_len - sub_trg_len)]
+                sub_labels[:-num_eval_tokens] = [-100 for _ in range(sub_seq_len - num_eval_tokens)]
 
                 sub_inputs = {
                     "index": index,
-                    "input_ids": sub_input_ids,
-                    "attention_mask": sub_attention_mask,
-                    "labels": sub_labels,
+                    "input_ids": sub_input_ids[-num_eval_length:],
+                    "attention_mask": sub_attention_mask[-num_eval_length:],
+                    "labels": sub_labels[-num_eval_length:],
                 }
 
                 for k, v in sub_inputs.items():
                     outputs[k].append(v)
                 
-                prev_end_loc = end_loc
                 # NOTE: when end_loc is just the same as seq_len, jump out
                 if end_loc == seq_len or jump:
                     break
@@ -131,12 +133,12 @@ def main():
 
     _, dataset_name, _ = split_file_dir_name_ext(args.eval_data)
 
-    process_fn = process_lm(tokenizer, max_length=args.max_length, stride=args.stride, min_length=args.min_length)
+    process_fn = process_lm(tokenizer, max_length=args.max_length, stride=args.stride, min_length=args.min_length, num_eval_tokens=args.num_eval_tokens, num_eval_length=args.num_eval_length)
     dataset = datasets.load_dataset("json", data_files=args.eval_data, cache_dir=args.dataset_cache_dir, split="train")
     if len(dataset) > args.max_sample_num:
         # slice out the first max_sample_num samples
         dataset = dataset.train_test_split(args.max_sample_num, shuffle=False)["test"]
-    dataset = dataset.map(process_fn, batched=True, num_proc=32, remove_columns=dataset.column_names, keep_in_memory=True, with_indices=True)
+    dataset = dataset.map(process_fn, batched=True, num_proc=10, remove_columns=dataset.column_names, keep_in_memory=True, with_indices=True)
 
     data_collator = DefaultDataCollator(tokenizer=tokenizer)
     dataloader = DataLoader(
